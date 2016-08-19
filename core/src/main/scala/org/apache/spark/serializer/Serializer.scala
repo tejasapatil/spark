@@ -129,6 +129,8 @@ abstract class SerializerInstance {
 abstract class SerializationStream {
   /** The most general-purpose method to write an object. */
   def writeObject[T: ClassTag](t: T): SerializationStream
+  /** TODO(tejasp) */
+  def ignoresKey(): Boolean = false
   /** Writes the object representing the key of a key-value pair. */
   def writeKey[T: ClassTag](key: T): SerializationStream = writeObject(key)
   /** Writes the object representing the value of a key-value pair. */

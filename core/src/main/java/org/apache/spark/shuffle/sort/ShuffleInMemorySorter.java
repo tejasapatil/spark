@@ -25,8 +25,11 @@ import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.collection.Sorter;
 import org.apache.spark.util.collection.unsafe.sort.RadixSort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class ShuffleInMemorySorter {
+  private final Logger logger = LoggerFactory.getLogger(ShuffleInMemorySorter.class);
 
   private static final class SortComparator implements Comparator<PackedRecordPointer> {
     @Override
@@ -175,11 +178,13 @@ final class ShuffleInMemorySorter {
   public ShuffleSorterIterator getSortedIterator() {
     int offset = 0;
     if (useRadixSort) {
+      logger.info("TEJASP **** using RadixSort");
       offset = RadixSort.sort(
         array, pos,
         PackedRecordPointer.PARTITION_ID_START_BYTE_INDEX,
         PackedRecordPointer.PARTITION_ID_END_BYTE_INDEX, false, false);
     } else {
+      logger.info("TEJASP **** using TimSort");
       MemoryBlock unused = new MemoryBlock(
         array.getBaseObject(),
         array.getBaseOffset() + pos * 8L,

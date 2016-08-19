@@ -186,6 +186,9 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   private void open() throws IOException {
     assert (sorter == null);
+    serBuffer = new MyByteArrayOutputStream(1024 * 1024);
+    serOutputStream = serializer.serializeStream(serBuffer);
+
     sorter = new ShuffleExternalSorter(
       memoryManager,
       blockManager,
@@ -193,9 +196,8 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       initialSortBufferSize,
       partitioner.numPartitions(),
       sparkConf,
-      writeMetrics);
-    serBuffer = new MyByteArrayOutputStream(1024 * 1024);
-    serOutputStream = serializer.serializeStream(serBuffer);
+      writeMetrics,
+      !serOutputStream.ignoresKey());
   }
 
   @VisibleForTesting
@@ -228,15 +230,20 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     final K key = record._1();
     final int partitionId = partitioner.getPartition(key);
     serBuffer.reset();
-    serOutputStream.writeKey(key, OBJECT_CLASS_TAG);
+    if (!serOutputStream.ignoresKey()) {
+      serOutputStream.writeKey(key, OBJECT_CLASS_TAG);
+    }
+
     serOutputStream.writeValue(record._2(), OBJECT_CLASS_TAG);
     serOutputStream.flush();
 
     final int serializedRecordSize = serBuffer.size();
     assert (serializedRecordSize > 0);
 
-    sorter.insertRecord(
-      serBuffer.getBuf(), Platform.BYTE_ARRAY_OFFSET, serializedRecordSize, partitionId);
+    sorter.insertRecord(serBuffer.getBuf(),
+                        Platform.BYTE_ARRAY_OFFSET,
+                        serializedRecordSize,
+                        partitionId);
   }
 
   @VisibleForTesting

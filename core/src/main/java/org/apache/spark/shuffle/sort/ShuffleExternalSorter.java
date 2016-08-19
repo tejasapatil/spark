@@ -99,6 +99,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
   @Nullable private ShuffleInMemorySorter inMemSorter;
   @Nullable private MemoryBlock currentPage = null;
   private long pageCursor = -1;
+  private final boolean writeRecordLength;
 
   ShuffleExternalSorter(
       TaskMemoryManager memoryManager,
@@ -107,7 +108,8 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       int initialSize,
       int numPartitions,
       SparkConf conf,
-      ShuffleWriteMetrics writeMetrics) {
+      ShuffleWriteMetrics writeMetrics,
+      boolean writeRecordLength) {
     super(memoryManager,
       (int) Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()),
       memoryManager.getTungstenMemoryMode());
@@ -120,6 +122,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     this.numElementsForSpillThreshold =
       conf.getLong("spark.shuffle.spill.numElementsForceSpillThreshold", 1024 * 1024 * 1024);
     this.writeMetrics = writeMetrics;
+    this.writeRecordLength = writeRecordLength;
     this.inMemSorter = new ShuffleInMemorySorter(
       this, initialSize, conf.getBoolean("spark.shuffle.sort.useRadixSort", true));
     this.peakMemoryUsedBytes = getMemoryUsage();
@@ -377,15 +380,21 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     }
 
     growPointerArrayIfNecessary();
-    // Need 4 bytes to store the record length.
-    final int required = length + 4;
+    int required = length;
+    if (writeRecordLength) {
+      // Need 4 bytes to store the record length.
+      required += 4;
+    }
+
     acquireNewPageIfNecessary(required);
 
     assert(currentPage != null);
     final Object base = currentPage.getBaseObject();
     final long recordAddress = taskMemoryManager.encodePageNumberAndOffset(currentPage, pageCursor);
-    Platform.putInt(base, pageCursor, length);
-    pageCursor += 4;
+    if (writeRecordLength) {
+      Platform.putInt(base, pageCursor, length);
+      pageCursor += 4;
+    }
     Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
     pageCursor += length;
     inMemSorter.insertRecord(recordAddress, partitionId);
