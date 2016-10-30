@@ -19,10 +19,30 @@ package org.apache.spark.sql.catalyst.util
 
 import java.util.{Map => JavaMap}
 
+import scala.collection.mutable
+
+import org.apache.spark.sql.types.DataType
+
 class ArrayBasedMapData(val keyArray: ArrayData, val valueArray: ArrayData) extends MapData {
   require(keyArray.numElements() == valueArray.numElements())
 
+  private var hashMap: mutable.Map[Any, Any] = null
+
   override def numElements(): Int = keyArray.numElements()
+
+  override def get(keyType: DataType, valueType: DataType, key: Any): Any = {
+    if (hashMap == null) {
+      hashMap = new mutable.HashMap[Any, Any]()
+      val length = keyArray.numElements()
+
+      var i = 0
+      while (i < length) {
+        hashMap(keyArray.get(i, keyType)) = valueArray.get(i, valueType)
+        i += 1
+      }
+    }
+    hashMap.get(key).orNull
+  }
 
   override def copy(): MapData = new ArrayBasedMapData(keyArray.copy(), valueArray.copy())
 

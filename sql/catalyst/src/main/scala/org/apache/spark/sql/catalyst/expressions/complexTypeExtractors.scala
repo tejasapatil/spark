@@ -281,55 +281,23 @@ case class GetMapValue(child: Expression, key: Expression)
   // todo: current search is O(n), improve it.
   protected override def nullSafeEval(value: Any, ordinal: Any): Any = {
     val map = value.asInstanceOf[MapData]
-    val length = map.numElements()
-    val keys = map.keyArray()
-    val values = map.valueArray()
-
-    var i = 0
-    var found = false
-    while (i < length && !found) {
-      if (keys.get(i, keyType) == ordinal) {
-        found = true
-      } else {
-        i += 1
-      }
-    }
-
-    if (!found || values.isNullAt(i)) {
-      null
-    } else {
-      values.get(i, dataType)
-    }
+    map.get(keyType, dataType, ordinal)
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    val index = ctx.freshName("index")
-    val length = ctx.freshName("length")
-    val keys = ctx.freshName("keys")
-    val found = ctx.freshName("found")
-    val key = ctx.freshName("key")
-    val values = ctx.freshName("values")
+    val value = ctx.freshName("value")
+    // ${ctx.getValue(keys, keyType, index)};
     nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
       s"""
-        final int $length = $eval1.numElements();
-        final ArrayData $keys = $eval1.keyArray();
-        final ArrayData $values = $eval1.valueArray();
-
-        int $index = 0;
-        boolean $found = false;
-        while ($index < $length && !$found) {
-          final ${ctx.javaType(keyType)} $key = ${ctx.getValue(keys, keyType, index)};
-          if (${ctx.genEqual(keyType, key, eval2)}) {
-            $found = true;
-          } else {
-            $index++;
-          }
-        }
-
-        if (!$found || $values.isNullAt($index)) {
+        final ${ctx.javaType(dataType)} $value = (${ctx.javaType(dataType)}) $eval1.get(
+          org.apache.spark.sql.types.DataTypes.$keyType,
+          org.apache.spark.sql.types.DataTypes.$dataType,
+          $eval2
+        );
+        if ($value == null) {
           ${ev.isNull} = true;
         } else {
-          ${ev.value} = ${ctx.getValue(values, dataType, index)};
+          ${ev.value} = $value;
         }
       """
     })

@@ -18,8 +18,10 @@
 package org.apache.spark.sql.catalyst.expressions;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 
 import org.apache.spark.sql.catalyst.util.MapData;
+import org.apache.spark.sql.types.DataType;
 import org.apache.spark.unsafe.Platform;
 
 /**
@@ -39,6 +41,8 @@ public final class UnsafeMapData extends MapData {
   // The 4-bytes header of key array `numBytes` is also included, so it's actually equal to
   // 4 + key array numBytes + value array numBytes.
   private int sizeInBytes;
+
+  private HashMap<Object, Object> hashMap = null;
 
   public Object getBaseObject() { return baseObject; }
   public long getBaseOffset() { return baseOffset; }
@@ -80,6 +84,7 @@ public final class UnsafeMapData extends MapData {
     this.baseObject = baseObject;
     this.baseOffset = baseOffset;
     this.sizeInBytes = sizeInBytes;
+    this.hashMap = null;
   }
 
   @Override
@@ -118,5 +123,20 @@ public final class UnsafeMapData extends MapData {
       baseObject, baseOffset, mapDataCopy, Platform.BYTE_ARRAY_OFFSET, sizeInBytes);
     mapCopy.pointTo(mapDataCopy, Platform.BYTE_ARRAY_OFFSET, sizeInBytes);
     return mapCopy;
+  }
+
+  @Override
+  public Object get(DataType keyType, DataType valueType, Object key) {
+    if (hashMap == null) {
+      int length = keys.numElements();
+      hashMap = new HashMap<>(length);
+
+      int i = 0;
+      while (i < length) {
+        hashMap.put(keys.get(i, keyType), values.get(i, valueType));
+        i += 1;
+      }
+    }
+    return hashMap.get(key);
   }
 }
