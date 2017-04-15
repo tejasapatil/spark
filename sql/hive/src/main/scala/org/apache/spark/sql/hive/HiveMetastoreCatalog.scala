@@ -119,6 +119,7 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
     val metastoreSchema = relation.tableMeta.schema
     val tableIdentifier =
       QualifiedTableName(relation.tableMeta.database, relation.tableMeta.identifier.table)
+    val bucketSpec = relation.tableMeta.bucketSpec
 
     val lazyPruningEnabled = sparkSession.sqlContext.conf.manageFilesourcePartitions
     val tablePath = new Path(relation.tableMeta.location)
