@@ -33,7 +33,9 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.CatalogRelation
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.datasources.BucketingUtils
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.hive._
 import org.apache.spark.sql.hive.client.HiveClientImpl
@@ -86,6 +88,61 @@ case class HiveTableScanExec(
     hiveQlTable.getInputFormatClass,
     hiveQlTable.getOutputFormatClass,
     hiveQlTable.getMetadata)
+
+  override val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) = {
+    val bucketSpec = if (sparkSession.sessionState.conf.bucketingEnabled) {
+      relation.tableMeta.bucketSpec
+    } else {
+      None
+    }
+    bucketSpec match {
+      case Some(spec) =>
+        // For bucketed columns:
+        // -----------------------
+        // `HashPartitioning` would be used only when:
+        // 1. ALL the bucketing columns are being read from the table
+        //
+        // For sorted columns:
+        // ---------------------
+        // Sort ordering should be used when ALL these criteria's match:
+        // 1. `HashPartitioning` is being used
+        // 2. A prefix (or all) of the sort columns are being read from the table.
+        //
+        // Sort ordering would be over the prefix subset of `sort columns` being read
+        // from the table.
+        // eg.
+        // Assume (col0, col2, col3) are the columns read from the table
+        // If sort columns are (col0, col1), then sort ordering would be considered as (col0)
+        // If sort columns are (col1, col0), then sort ordering would be empty as per rule #2
+        // above
+
+        def toAttribute(colName: String): Option[Attribute] =
+          output.find(_.name == colName)
+
+        val bucketColumns = spec.bucketColumnNames.flatMap(n => toAttribute(n))
+        if (bucketColumns.size == spec.bucketColumnNames.size) {
+          val partitioning = HashPartitioning(bucketColumns, spec.numBuckets, Option("Hive"))
+          val sortColumns =
+            spec.sortColumnNames.map(x => toAttribute(x)).takeWhile(x => x.isDefined).map(_.get)
+
+          val sortOrder = if (sortColumns.nonEmpty) {
+            // TODO(tejasp) check single file per bucket
+            // for partititoned tables, this wont work as partitions need to be pruned first
+            // this can also help with CBO given that we would have better stats
+            // TODO Currently Spark does not support writing columns sorting in descending order
+            // so using Ascending order. This can be fixed in future
+            sortColumns.map(attribute => SortOrder(attribute, Ascending))
+          } else {
+            Nil
+          }
+          (partitioning, sortOrder)
+        } else {
+          (UnknownPartitioning(0), Nil)
+        }
+      case _ =>
+        (UnknownPartitioning(0), Nil)
+    }
+  }
 
   // Create a local copy of hadoopConf,so that scan specific modifications should not impact
   // other queries

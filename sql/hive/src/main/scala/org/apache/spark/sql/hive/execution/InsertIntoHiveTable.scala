@@ -34,8 +34,9 @@ import org.apache.hadoop.hive.ql.plan.TableDesc
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.catalyst.plans.physical.{ClusteredDistribution, Distribution, UnspecifiedDistribution}
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.FileFormatWriter
 import org.apache.spark.sql.hive._
@@ -436,4 +437,48 @@ case class InsertIntoHiveTable(
     // TODO: implement hive compatibility as rules.
     Seq.empty[Row]
   }
+
+  /*
+  override val (requiredChildDistribution, requiredChildOrdering):
+    (Seq[Distribution], Seq[Seq[SortOrder]]) = {
+
+    if (table.bucketSpec.isEmpty || table.bucketSpec.get.numBuckets < 1) {
+      (Seq(UnspecifiedDistribution), Seq(Nil))
+    } else {
+      val bucketSpec = table.bucketSpec.get
+
+      def toChildAttribute(colName: String, columnType: String): Attribute = {
+        // `child` would have attributes in exact order as expected to be inserted in the
+        // `table`. So, we would have to get the index of `colName` amongst the attributes
+        // of the `table` and get the attribute at corresponding index in the `child`
+
+        val index = table.schema.indexWhere(_.name == colName)
+        if (index == -1) {
+          throw new AnalysisException(
+            s"Could not find $columnType column $colName for output table " +
+              s"${table.qualifiedName} in its known columns : " +
+              s"(${table.schema.map(_.name).mkString(", ")})")
+        }
+        query.output(index)
+      }
+
+      val bucketColumns = bucketSpec.bucketColumnNames.map(toChildAttribute(_, "bucket"))
+
+      // TODO(tejasp) Add support for writing partitioned tables
+      // val partitionColumn = partition.keys.map(toChildAttribute(_, "partition")).toList
+      val requiredChildDistribution = Seq(ClusteredDistribution(
+        bucketColumns,
+        Option(bucketSpec.numBuckets),
+        Option("hivehash")))
+
+      val sortColumnNames = bucketSpec.sortColumnNames
+      val requiredChildOrdering = if (sortColumnNames.nonEmpty) {
+        Seq(sortColumnNames.map(toChildAttribute(_, "sort")).map(SortOrder(_, Ascending)))
+      } else {
+        Seq(Nil)
+      }
+      (requiredChildDistribution, requiredChildOrdering)
+    }
+  }
+  */
 }
