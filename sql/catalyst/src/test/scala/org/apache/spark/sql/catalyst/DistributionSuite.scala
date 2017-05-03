@@ -41,6 +41,14 @@ class DistributionSuite extends SparkFunSuite {
     }
   }
 
+  test("tejasp") {
+    val a = HashPartitioning(Seq('a, 'b, 'c), 10)
+    val b = HashPartitioning(Seq('a, 'b, 'c), 10)
+    val c = HashPartitioning(Seq('a, 'b, 'c), 10, Some("Hive"))
+    assert(a.compatibleWith(b))
+    assert(a.compatibleWith(c))
+  }
+
   test("HashPartitioning (with nullSafe = true) is the output partitioning") {
     // Cases which do not need an exchange between two data properties.
     checkSatisfied(

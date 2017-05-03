@@ -32,17 +32,19 @@ import org.apache.hadoop.hive.ql.ErrorMsg
 import org.apache.hadoop.hive.ql.plan.TableDesc
 
 import org.apache.spark.internal.io.FileCommitProtocol
-import org.apache.spark.sql.{AnalysisException, Dataset, Row, SparkSession}
+import org.apache.spark.sql.{AnalysisException, Dataset}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.catalyst.plans.physical.{ClusteredDistribution, Distribution, UnspecifiedDistribution}
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.execution.{PlanLater, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.FileFormatWriter
 import org.apache.spark.sql.hive._
 import org.apache.spark.sql.hive.HiveShim.{ShimFileSinkDesc => FileSinkDesc}
 import org.apache.spark.sql.hive.client.{HiveClientImpl, HiveVersion}
 import org.apache.spark.SparkException
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
 
 
 /**
@@ -79,11 +81,15 @@ case class InsertIntoHiveTable(
     partition: Map[String, Option[String]],
     query: LogicalPlan,
     overwrite: Boolean,
-    ifNotExists: Boolean) extends RunnableCommand {
+    ifNotExists: Boolean) extends UnaryExecNode {
 
-  override protected def innerChildren: Seq[LogicalPlan] = query :: Nil
+  def output: Seq[Attribute] = Seq.empty
 
   var createdTempDir: Option[Path] = None
+
+  def child: SparkPlan = PlanLater(query)
+
+  override protected def innerChildren: Seq[LogicalPlan] = query :: Nil
 
   private def executionId: String = {
     val rand: Random = new Random
@@ -230,7 +236,8 @@ case class InsertIntoHiveTable(
    * `org.apache.hadoop.hive.serde2.SerDe` and the
    * `org.apache.hadoop.mapred.OutputFormat` provided by the table definition.
    */
-  override def run(sparkSession: SparkSession): Seq[Row] = {
+  protected[sql] lazy val sideEffectResult: Seq[InternalRow] = {
+    val sparkSession = sqlContext.sparkSession
     val sessionState = sparkSession.sessionState
     val externalCatalog = sparkSession.sharedState.externalCatalog
     val hiveVersion = externalCatalog.asInstanceOf[HiveExternalCatalog].client.version
@@ -330,7 +337,7 @@ case class InsertIntoHiveTable(
     }
 
     val committer = FileCommitProtocol.instantiate(
-      sparkSession.sessionState.conf.fileCommitProtocolClass,
+      sessionState.conf.fileCommitProtocolClass,
       jobId = java.util.UUID.randomUUID().toString,
       outputPath = tmpLocation.toString,
       isAppend = false)
@@ -435,10 +442,19 @@ case class InsertIntoHiveTable(
     // however for now we return an empty list to simplify compatibility checks with hive, which
     // does not return anything for insert operations.
     // TODO: implement hive compatibility as rules.
-    Seq.empty[Row]
+    Seq.empty[InternalRow]
   }
 
-  /*
+  protected override def doExecute(): RDD[InternalRow] = {
+    sqlContext.sparkContext.parallelize(sideEffectResult.asInstanceOf[Seq[InternalRow]], 1)
+  }
+
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  override def executeCollect(): Array[InternalRow] = sideEffectResult.toArray
+
+  // TODO(tejasp) finalise on the spec for requirement
+  // child-distribution :
   override val (requiredChildDistribution, requiredChildOrdering):
     (Seq[Distribution], Seq[Seq[SortOrder]]) = {
 
@@ -451,7 +467,6 @@ case class InsertIntoHiveTable(
         // `child` would have attributes in exact order as expected to be inserted in the
         // `table`. So, we would have to get the index of `colName` amongst the attributes
         // of the `table` and get the attribute at corresponding index in the `child`
-
         val index = table.schema.indexWhere(_.name == colName)
         if (index == -1) {
           throw new AnalysisException(
@@ -459,26 +474,33 @@ case class InsertIntoHiveTable(
               s"${table.qualifiedName} in its known columns : " +
               s"(${table.schema.map(_.name).mkString(", ")})")
         }
-        query.output(index)
+        child.output(index)
       }
 
       val bucketColumns = bucketSpec.bucketColumnNames.map(toChildAttribute(_, "bucket"))
-
-      // TODO(tejasp) Add support for writing partitioned tables
-      // val partitionColumn = partition.keys.map(toChildAttribute(_, "partition")).toList
-      val requiredChildDistribution = Seq(ClusteredDistribution(
-        bucketColumns,
-        Option(bucketSpec.numBuckets),
-        Option("hivehash")))
+      val requiredChildDistribution =
+        Seq(BucketedDistribution(bucketColumns, bucketSpec.numBuckets, "HiveHash"))
 
       val sortColumnNames = bucketSpec.sortColumnNames
       val requiredChildOrdering = if (sortColumnNames.nonEmpty) {
-        Seq(sortColumnNames.map(toChildAttribute(_, "sort")).map(SortOrder(_, Ascending)))
+        val isNonPartitionedTable = partition.isEmpty
+        val isStaticPartition = partition.forall(_._2.isDefined)
+
+        if (isNonPartitionedTable || isStaticPartition) {
+          Seq(sortColumnNames.map(toChildAttribute(_, "sort")).map(SortOrder(_, Ascending)))
+        } else {
+          val hashPartitioning =
+            HashPartitioning(bucketColumns, bucketSpec.numBuckets, "HiveHash")
+            Seq((
+              partition.keys.map(toChildAttribute(_, "part")).map(SortOrder(_, Ascending)) ++
+                hashPartitioning.partitionIdExpression.map(SortOrder(_, Ascending)) ++
+                sortColumnNames.map(toChildAttribute(_, "sort")).map(SortOrder(_, Ascending))
+              ).toSeq)
+        }
       } else {
         Seq(Nil)
       }
       (requiredChildDistribution, requiredChildOrdering)
     }
   }
-  */
 }

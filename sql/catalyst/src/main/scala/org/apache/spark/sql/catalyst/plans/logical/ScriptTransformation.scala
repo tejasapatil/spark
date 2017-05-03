@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expre
  * @param ioschema the input and output schema applied in the execution of the script.
  */
 case class ScriptTransformation(
+
     input: Seq[Expression],
     script: String,
     output: Seq[Attribute],

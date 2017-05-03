@@ -105,6 +105,7 @@ class HiveSessionStateBuilder(session: SparkSession, parentState: Option[Session
           SpecialLimits,
           InMemoryScans,
           HiveTableScans,
+          DataSinks,
           Scripts,
           Aggregation,
           JoinSelection,

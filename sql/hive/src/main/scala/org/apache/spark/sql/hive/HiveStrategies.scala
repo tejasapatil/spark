@@ -111,6 +111,31 @@ class ResolveHiveSerdeTable(session: SparkSession) extends Rule[LogicalPlan] {
       }
 
       c.copy(tableDesc = withSchema)
+
+    case i @ InsertIntoTable(relation: CatalogRelation, p, query, _, _)
+      if DDLUtils.isHiveTable(relation) =>
+
+      // Finds the database name if the name does not exist.
+      val dbName = t.identifier.database.getOrElse(session.catalog.currentDatabase)
+      val table = t.copy(identifier = t.identifier.copy(database = Some(dbName)))
+
+      // Determines the serde/format of Hive tables
+      val withStorage = determineHiveSerde(table)
+
+      // Infers the schema, if empty, because the schema could be determined by Hive
+      // serde.
+      val withSchema = if (query.isEmpty) {
+        val inferred = HiveUtils.inferSchema(withStorage)
+        if (inferred.schema.length <= 0) {
+          throw new AnalysisException("Unable to infer the schema. " +
+            s"The schema specification is required to create the table ${inferred.identifier}.")
+        }
+        inferred
+      } else {
+        withStorage
+      }
+
+      i.copy(tableDesc = withSchema)
   }
 }
 
@@ -160,10 +185,6 @@ class DetermineTableStats(session: SparkSession) extends Rule[LogicalPlan] {
  */
 object HiveAnalysis extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-    case InsertIntoTable(relation: CatalogRelation, partSpec, query, overwrite, ifNotExists)
-        if DDLUtils.isHiveTable(relation.tableMeta) =>
-      InsertIntoHiveTable(relation.tableMeta, partSpec, query, overwrite, ifNotExists)
-
     case CreateTable(tableDesc, mode, None) if DDLUtils.isHiveTable(tableDesc) =>
       CreateTableCommand(tableDesc, ignoreIfExists = mode == SaveMode.Ignore)
 
@@ -232,6 +253,15 @@ private[hive] trait HiveStrategies {
       case ScriptTransformation(input, script, output, child, ioschema) =>
         val hiveIoSchema = HiveScriptIOSchema(ioschema)
         ScriptTransformationExec(input, script, output, planLater(child), hiveIoSchema) :: Nil
+      case _ => Nil
+    }
+  }
+
+  object DataSinks extends Strategy {
+    def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
+      case InsertIntoTable(table: LogicalRelation, partition, child, overwrite, ifNotExists) =>
+        InsertIntoHiveTable(
+          table.catalogTable.get, partition, child, overwrite, ifNotExists) :: Nil
       case _ => Nil
     }
   }
