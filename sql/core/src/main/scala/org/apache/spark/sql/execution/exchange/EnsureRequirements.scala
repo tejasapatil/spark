@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution.exchange
 
+import scala.language.existentials
+
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -47,10 +49,32 @@ case class EnsureRequirements(conf: SQLConf) extends Rule[SparkPlan] {
    */
   private def createPartitioning(
       requiredDistribution: Distribution,
-      numPartitions: Int): Partitioning = {
+      numPartitions: Int,
+      childPartitionings: Seq[Partitioning] = Seq()): Partitioning = {
     requiredDistribution match {
       case AllTuples => SinglePartition
-      case ClusteredDistribution(clustering) => HashPartitioning(clustering, numPartitions)
+      case ClusteredDistribution(clustering) =>
+        val distinctChildHashingFunctions = childPartitionings.map {
+          case HashPartitioning(_, _, hashingFunction) => hashingFunction
+          case _ => classOf[Murmur3Hash]
+        }.distinct
+
+        // If all the children use the same hashing function, then use it. Else fallback to the
+        // default hashing function (ie. Murmur3Hash). This might not be the most optimal thing
+        // to do. eg. In case of join, if left child is hashed using HiveHash and the right one
+        // using Murmur3Hash, this would shuffle the left relation. If the left relation is
+        // larger than the right relation, the cost of shuffling it will be high. Instead more
+        // optimal thing to do would be to shuffle the right relation using HiveHash so that
+        // at the join side both the children are shuffled using the same hashing function. Using
+        // Murmur3Hash might turn out better if there are downstream operator's needing data
+        // partitioned over Murmur3Hash which cannot be estimated at this point.
+        val targetHashingFunction = if (distinctChildHashingFunctions.length == 1) {
+          distinctChildHashingFunctions.head
+        } else {
+          classOf[Murmur3Hash]
+        }
+        HashPartitioning(clustering, numPartitions, targetHashingFunction)
+
       case OrderedDistribution(ordering) => RangePartitioning(ordering, numPartitions)
       case dist => sys.error(s"Do not know how to satisfy distribution $dist")
     }
@@ -179,11 +203,13 @@ case class EnsureRequirements(conf: SQLConf) extends Rule[SparkPlan] {
       // First check if the existing partitions of the children all match. This means they are
       // partitioned by the same partitioning into the same number of partitions. In that case,
       // don't try to make them match `defaultPartitions`, just use the existing partitioning.
-      val maxChildrenNumPartitions = children.map(_.outputPartitioning.numPartitions).max
-      val useExistingPartitioning = children.zip(requiredChildDistributions).forall {
-        case (child, distribution) =>
-          child.outputPartitioning.guarantees(
-            createPartitioning(distribution, maxChildrenNumPartitions))
+      val childPartitionings = children.map(_.outputPartitioning)
+      val maxChildrenNumPartitions = childPartitionings.map(_.numPartitions).max
+      val useExistingPartitioning = childPartitionings.zip(requiredChildDistributions).forall {
+        case (childPartitioning, distribution) =>
+          val targetPartitioning =
+            createPartitioning(distribution, maxChildrenNumPartitions, childPartitionings)
+          childPartitioning.guarantees(targetPartitioning)
       }
 
       children = if (useExistingPartitioning) {
